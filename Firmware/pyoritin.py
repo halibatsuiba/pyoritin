@@ -55,6 +55,7 @@ class StepperMotor:
         self.enable_pin = Pin(enable_pin, Pin.OUT)
         self.potentiometer = potentiometer
         self.steps_remaining = 0
+        self.position = 0
         self.direction = 1
         self.timer = Timer()
 
@@ -62,9 +63,14 @@ class StepperMotor:
             self.enable_pin.value(1)  # Disable the driver
 
     def _step_callback(self, timer):
+        if self.potentiometer.value < 20:
+            self.timer.deinit()
+            self.position = 0
+            self.steps_remaining = -1
+
         if self.steps_remaining > 0:
             self.step_pin.value(1)
-            # time.sleep_us(10)
+            time.sleep_us(10)
             self.step_pin.value(0)
             self.steps_remaining -= 1
         else:
@@ -79,12 +85,10 @@ class StepperMotor:
         self.timer.init(freq=speed_hz, mode=Timer.PERIODIC, callback=self._step_callback)
         
     def home(self):
-        if self.potentiometer.value == 0:
-            self.position = 0
-            return True
-        else:
-            self.move_to_position(-self.position, 200)  # Move back to home
-            return False        
+        while self.potentiometer.value > 0:
+            if self.steps_remaining == 0:
+                self.move(200, 0, 100)  # Move back to home
+        return True        
 
 class OLEDDisplay:
     def __init__(self, scl_pin, sda_pin, width=128, height=64):
@@ -124,15 +128,18 @@ class RESTServer:
                 params = json.loads(body)
                 steps = int(params['steps'])
                 direction = int(params['direction'])
+                if self.display:
+                    self.display.show_message(f"Moving: {steps}\nDir: {'CW' if direction else 'CCW'}")                
                 speed = int(params['speed'])
                 self.stepper.move(steps, direction, speed)
                 response = json.dumps({"status": "ok", "steps": steps, "direction": direction, "speed": speed})
-                if self.display:
-                    self.display.show_message(f"Moving: {steps}\nDir: {'CW' if direction else 'CCW'}")
             except Exception as e:
                 response = json.dumps({"status": "error", "message": str(e)})
 
         elif "POST /home" in request:
+            if self.display:
+                self.display.show_message(f"Homing")
+            
             homed = self.stepper.home()
             if homed:
                 response = json.dumps({"status": "ok", "position": 0})
@@ -155,16 +162,16 @@ class RESTServer:
         while True:
             # Add other tasks that you might need to do in the loop
             await asyncio.sleep(5)
-            # print(f"Pot: {self.potentiometer.value}  Stepper:")
+            print(f"Pot: {self.potentiometer.value}  Stepper:")
         
 # Main function
 async def main():
     # Initialize components
     oled_display = OLEDDisplay(scl_pin=5, sda_pin=4)
     wifi_manager = WiFiManager(SSID, PASSWORD, display=oled_display)
-    stepper_motor = StepperMotor(potentiometer, dir_pin=14, step_pin=15, enable_pin=13)
     potentiometer = Potentiometer(pot_pin=26)
     potentiometer.start()
+    stepper_motor = StepperMotor(potentiometer, dir_pin=14, step_pin=15, enable_pin=13)
     rest_server = RESTServer(stepper_motor, potentiometer, display=oled_display)
 
     # Connect to Wi-Fi

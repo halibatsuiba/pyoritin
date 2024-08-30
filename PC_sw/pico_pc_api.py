@@ -22,6 +22,19 @@ def get_motor_status():
         print(f"Error: {e}")
     return int(status['steps_remaining'])
 
+def homing():
+    """
+    Drive motor to home position.
+    """
+    try:
+        response = requests.get(f"{BASE_URL}/home")
+        if response.status_code == 200:
+            status = response.json()
+            print(f"{status['status']}")
+    except Exception as e:
+        print(f"Error: {e}")
+  
+
 def move_motor(steps, direction, speed):
     """
     Move the stepper motor.
@@ -53,12 +66,10 @@ if __name__ == "__main__":
     get_motor_status()  # Get current motor status
     
     # Move the motor 200 steps clockwise at 500 Hz
-    move_motor(steps=200, direction=0, speed=200)
-    
-    steps_remaining = get_motor_status()
-    # Wait and then check status again
-    while (steps_remaining != 0):
-        steps_remaining = get_motor_status()
-        time.sleep(0.1)
+    # ove_motor(steps=200, direction=0, speed=200)
 
-    # move_motor(steps=200, direction=1, speed=300)
+    homing()
+
+    # Wait and then check status again
+    get_motor_status()
+
