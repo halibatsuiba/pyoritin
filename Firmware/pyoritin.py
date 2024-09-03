@@ -58,24 +58,26 @@ class StepperMotor:
         self.position = 0
         self.direction = 1
         self.timer = Timer()
+        self.homing = False
 
         if self.enable_pin:
             self.enable_pin.value(1)  # Disable the driver
 
     def _step_callback(self, timer):
-        if self.potentiometer.value < 20:
-            self.timer.deinit()
-            self.position = 0
-            self.steps_remaining = -1
+        if self.homing == false:
+            if self.potentiometer.value < 50:
+                self.timer.deinit()
+                self.position = 0
+                self.steps_remaining = -1
 
-        if self.steps_remaining > 0:
-            self.step_pin.value(1)
-            time.sleep_us(10)
-            self.step_pin.value(0)
-            self.steps_remaining -= 1
-        else:
-            self.enable_pin.value(1)  # Disable the driver
-            self.timer.deinit()
+            if self.steps_remaining > 0:
+                self.step_pin.value(1)
+                time.sleep_us(10)
+                self.step_pin.value(0)
+                self.steps_remaining -= 1
+            else:
+                self.enable_pin.value(1)  # Disable the driver
+                self.timer.deinit()
 
     def move(self, steps, direction, speed_hz):
         self.enable_pin.value(0)  # Enable the driver
@@ -84,7 +86,25 @@ class StepperMotor:
         self.dir_pin.value(self.direction)
         self.timer.init(freq=speed_hz, mode=Timer.PERIODIC, callback=self._step_callback)
         
+    def _home_callback(self, timer):
+        if self.potentiometer.value < 20:
+            self.timer.deinit()
+            self.position = 0
+            self.steps_remaining = -1
+            self.homing = False
+            
+        if self.steps_remaining > 0:
+            self.step_pin.value(1)
+            time.sleep_us(10)
+            self.step_pin.value(0)
+            self.steps_remaining -= 1
+        else:
+            self.enable_pin.value(1)  # Disable the driver
+            self.timer.deinit()            
+            self.homing = False
+            
     def home(self):
+        self.homing = True
         while self.potentiometer.value > 0:
             if self.steps_remaining == 0:
                 self.move(200, 0, 100)  # Move back to home
@@ -114,7 +134,15 @@ class RESTServer:
 
         response = ""
 
-        if "GET /status" in request:
+        if "GET /" in request:
+            response = json.dumps("Here be dragons.")
+            writer.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
+            writer.write(response)
+            await writer.drain()
+            await writer.aclose()            
+            return
+            
+        elif "GET /status" in request:
             # Return status of the stepper motor
             response = json.dumps({"steps_remaining": self.stepper.steps_remaining, "direction": self.stepper.direction})
             if self.display:
@@ -137,14 +165,17 @@ class RESTServer:
                 response = json.dumps({"status": "error", "message": str(e)})
 
         elif "POST /home" in request:
-            if self.display:
-                self.display.show_message(f"Homing")
-            
-            homed = self.stepper.home()
-            if homed:
-                response = json.dumps({"status": "ok", "position": 0})
-            else:
-                response = json.dumps({"status": "moving", "position": self.stepper.position})
+            try:
+                if self.display:
+                    self.display.show_message(f"Homing")
+                
+                homed = self.stepper.home()
+#                 if homed:
+#                     response = json.dumps({"status": "ok", "position": 0})
+#                 else:
+#                     response = json.dumps({"status": "moving", "position": self.stepper.position})
+            except Exception as e:
+                response = json.dumps({"status": "error", "message": str(e)})
                 
         # Send HTTP response
         writer.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')

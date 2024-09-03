@@ -22,12 +22,15 @@ def get_motor_status():
         print(f"Error: {e}")
     return int(status['steps_remaining'])
 
-def homing():
+def home():
     """
     Drive motor to home position.
     """
+    payload = {
+    }
+    headers = {'Content-Type': 'application/json'}    
     try:
-        response = requests.get(f"{BASE_URL}/home")
+        response = requests.get(f"{BASE_URL}/home", data=json.dumps(payload), headers=headers)
         if response.status_code == 200:
             status = response.json()
             print(f"{status['status']}")
@@ -66,9 +69,9 @@ if __name__ == "__main__":
     get_motor_status()  # Get current motor status
     
     # Move the motor 200 steps clockwise at 500 Hz
-    # ove_motor(steps=200, direction=0, speed=200)
+    # move_motor(steps=200, direction=0, speed=200)
 
-    homing()
+    home()
 
     # Wait and then check status again
     get_motor_status()
