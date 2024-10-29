@@ -108,6 +108,7 @@ class WebServer:
         addr = socket.getaddrinfo(ip, 80)[0][-1]
 
         s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(addr)
         s.listen(5)
         print(f"Listening on {ip}:80")
@@ -158,16 +159,16 @@ class WebServer:
                                     document.getElementById("potValue").innerText = data.potentiometer;
                                 }});
                             }}
-                            setInterval(updatePot, 1000);
+                            setInterval(updatePot, 5000);
 
-                            function moveMotor(direction) {{
+                            function moveMotor() {{
                                 const steps = document.getElementById("steps").value;
                                 const speed = document.getElementById("speed").value;
-                                fetch(`/move?steps=${{steps}}&direction=${{direction}}&speed=${{speed}}`)
-                                .then(response => response.json())
-                                .then(data => {{
-                                    console.log("Motor moved", data);
-                                }});
+                                const direction = steps < 0 ? 0 : 1;  // Determine direction based on sign of steps
+                                const absSteps = Math.abs(steps);     // Use absolute value of steps
+
+                                fetch(`/move?steps=${{absSteps}}&direction=${{direction}}&speed=${{speed}}`)
+                                .then(response => response.json());
                             }}
                         </script>
                     </head>
@@ -178,8 +179,7 @@ class WebServer:
                         <input type="number" id="steps" name="steps">
                         <label for="speed">Speed (Hz):</label>
                         <input type="number" id="speed" name="speed">
-                        <button onclick="moveMotor(1)">Move Forward</button>
-                        <button onclick="moveMotor(0)">Move Backward</button>
+                        <button onclick="moveMotor">Move</button>
                     </body>
                   </html>"""
         return html
@@ -210,6 +210,12 @@ class RESTServer:
                 response = json.dumps({"status": "ok", "steps": steps})
             except Exception as e:
                 response = json.dumps({"status": "error", "message": str(e)})
+
+        elif "GET /status" in request:
+            # Return status of the stepper motor
+            response = json.dumps({"steps_remaining": self.stepper.steps_remaining, "direction": self.stepper.direction})
+            if self.display:
+                self.display.show_message(f"Steps: {self.stepper.steps_remaining}\nDir: {'CW' if self.stepper.direction else 'CCW'}")
 
         writer.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
         writer.write(response)

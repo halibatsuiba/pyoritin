@@ -1,9 +1,12 @@
 import network
 import uasyncio as asyncio
-from machine import Pin, I2C, Timer, ADC
-import ssd1306
+from machine import Pin
 import time
 import json
+from potentiometer import potentiometer
+from oleddisplay import oleddisplay
+from steppermotor import steppermotor
+import logging
 
 # Wi-Fi credentials
 SSID = 'Ohkola'
@@ -23,165 +26,74 @@ class WiFiManager:
         while not self.wlan.isconnected():
             print("Connecting to Wi-Fi...")
             if self.display:
-                self.display.show_message("Connecting to Wi-Fi...")
+                # self.display.show_message("Connecting to Wi-Fi...")
+                self.display.update_row(f"Connecting...", 1)
             await asyncio.sleep(1)
 
-        print(f"Connected to {self.ssid}")
+        # print(f"Connected to {self.ssid}")
         if self.display:
-            self.display.show_message(f"{self.ssid}")
+            # self.display.show_message(f"{self.ssid}")
+            self.display.update_row(f"{self.ssid}", 1)
+            # self.display.draw_wifi_symbol(5,10)
+            ipaddress = self.get_ip()
+            self.display.update_row(f"{ipaddress}", 3)
+            print(f'RSSI:{self.wlan.status('rssi')}')
 
     def get_ip(self):
         return self.wlan.ifconfig()[0]
 
-class Potentiometer:
-    def __init__(self, pot_pin=26):
-        self.potentiometer = ADC(Pin(pot_pin))
-        self.value = 0
-        self.timer = Timer()
-        
-    def _pot_callback(self, timer):
-        self.value = self.potentiometer.read_u16() >> 4  # 12-bit value (0-4095)
-        
-    def start(self):
-        self.timer.init(freq=10, mode=Timer.PERIODIC, callback=self._pot_callback)
-        
-    def stop(self):
-        self.timer.deinit()
-
-class StepperMotor:
-    def __init__(self, potentiometer, dir_pin, step_pin, enable_pin ):
-        self.dir_pin = Pin(dir_pin, Pin.OUT)
-        self.step_pin = Pin(step_pin, Pin.OUT)
-        self.enable_pin = Pin(enable_pin, Pin.OUT)
-        self.potentiometer = potentiometer
-        self.steps_remaining = 0
-        self.position = 0
-        self.direction = 1
-        self.timer = Timer()
-        self.homing = False
-
-        if self.enable_pin:
-            self.enable_pin.value(1)  # Disable the driver
-
-    def _step_callback(self, timer):
-        if self.homing == false:
-            if self.potentiometer.value < 50:
-                self.timer.deinit()
-                self.position = 0
-                self.steps_remaining = -1
-
-            if self.steps_remaining > 0:
-                self.step_pin.value(1)
-                time.sleep_us(10)
-                self.step_pin.value(0)
-                self.steps_remaining -= 1
-            else:
-                self.enable_pin.value(1)  # Disable the driver
-                self.timer.deinit()
-
-    def move(self, steps, direction, speed_hz):
-        self.enable_pin.value(0)  # Enable the driver
-        self.direction = direction
-        self.steps_remaining = steps
-        self.dir_pin.value(self.direction)
-        self.timer.init(freq=speed_hz, mode=Timer.PERIODIC, callback=self._step_callback)
-        
-    def _home_callback(self, timer):
-        if self.potentiometer.value < 20:
-            self.timer.deinit()
-            self.position = 0
-            self.steps_remaining = -1
-            self.homing = False
-            
-        if self.steps_remaining > 0:
-            self.step_pin.value(1)
-            time.sleep_us(10)
-            self.step_pin.value(0)
-            self.steps_remaining -= 1
-        else:
-            self.enable_pin.value(1)  # Disable the driver
-            self.timer.deinit()            
-            self.homing = False
-            
-    def home(self):
-        self.homing = True
-        while self.potentiometer.value > 0:
-            if self.steps_remaining == 0:
-                self.move(200, 0, 100)  # Move back to home
-        return True        
-
-class OLEDDisplay:
-    def __init__(self, scl_pin, sda_pin, width=128, height=64):
-        self.i2c = I2C(0, scl=Pin(scl_pin), sda=Pin(sda_pin))
-        self.oled = ssd1306.SSD1306_I2C(width, height, self.i2c)
-
-    def show_message(self, message):
-        self.oled.fill(0)
-        for i, line in enumerate(message.split('\n')):
-            self.oled.text(line, 0, i * 10)
-        self.oled.show()
 
 class RESTServer:
-    def __init__(self, stepper, potentiometer, display=None):
+    def __init__(self, stepper, potentiometer, wifi_manager, display=None):
         self.display = display
         self.stepper = stepper
         self.potentiometer = potentiometer
+        self.wlan = wifi_manager.wlan
 
     async def handle_request(self, reader, writer):
         request = await reader.read(1024)
         request = request.decode('utf-8')
-        print(request)
-
-        response = ""
-
-        if "GET /" in request:
-            response = json.dumps("Here be dragons.")
-            writer.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
-            writer.write(response)
-            await writer.drain()
-            await writer.aclose()            
-            return
-            
-        elif "GET /status" in request:
+        response_body = ""
+        
+        if "GET /status" in request:
             # Return status of the stepper motor
-            response = json.dumps({"steps_remaining": self.stepper.steps_remaining, "direction": self.stepper.direction})
+            response_body = json.dumps({"steps_remaining": self.stepper.steps_remaining, "direction": self.stepper.direction})
             if self.display:
                 self.display.show_message(f"Steps: {self.stepper.steps_remaining}\nDir: {'CW' if self.stepper.direction else 'CCW'}")
 
+        if "GET /home" in request:
+            try:
+                self.stepper.home()
+            except Exception as e:
+                response_body = json.dumps({"status": "error", "message": str(e)})
+                
         elif "POST /move" in request:
             # Extract parameters from the request
             try:
-                content_length = int(request.split("Content-Length: ")[1].split("\r\n")[0])
                 body = request.split("\r\n\r\n")[1]
                 params = json.loads(body)
+
                 steps = int(params['steps'])
                 direction = int(params['direction'])
-                if self.display:
-                    self.display.show_message(f"Moving: {steps}\nDir: {'CW' if direction else 'CCW'}")                
                 speed = int(params['speed'])
-                self.stepper.move(steps, direction, speed)
-                response = json.dumps({"status": "ok", "steps": steps, "direction": direction, "speed": speed})
-            except Exception as e:
-                response = json.dumps({"status": "error", "message": str(e)})
-
-        elif "POST /home" in request:
-            try:
+                
                 if self.display:
-                    self.display.show_message(f"Homing")
-                
-                homed = self.stepper.home()
-#                 if homed:
-#                     response = json.dumps({"status": "ok", "position": 0})
-#                 else:
-#                     response = json.dumps({"status": "moving", "position": self.stepper.position})
+                    self.display.show_message(f"Moving: {steps}\nDir: {'CW' if direction else 'CCW'}")
+                    
+                response_body = json.dumps({"status": "ok", "steps": steps, "direction": direction, "speed": speed})
+                self.stepper.move(steps, direction, speed)
+            
             except Exception as e:
-                response = json.dumps({"status": "error", "message": str(e)})
-                
-        # Send HTTP response
-        writer.write('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n')
-        writer.write(response)
+                response_body = json.dumps({"status": "error", "message": str(e)})
+
+        # Format the HTTP response
+        response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + response_body
+        
+        # Send response and close the connection
+        writer.write(response.encode('utf-8'))
         await writer.drain()
-        await writer.aclose()
+        writer.close()
+        await writer.wait_closed()
 
     async def start_server(self):    
         # Start the server and run the event loop
@@ -192,18 +104,24 @@ class RESTServer:
         
         while True:
             # Add other tasks that you might need to do in the loop
-            await asyncio.sleep(5)
-            print(f"Pot: {self.potentiometer.value}  Stepper:")
+            await asyncio.sleep(1)
+            # print(f"Pot: {self.potentiometer.value}  Stepper:")
+            RSSI = self.wlan.status('rssi')
+            self.display.update_row(f"RSSI: {RSSI}", 2)
+            self.display.update_row(f"Pot: {self.potentiometer.value}", 4)
+            
         
 # Main function
 async def main():
     # Initialize components
-    oled_display = OLEDDisplay(scl_pin=5, sda_pin=4)
+    logging.warning('Logger online')
+    oled_display = oleddisplay(scl_pin=5, sda_pin=4)
     wifi_manager = WiFiManager(SSID, PASSWORD, display=oled_display)
-    potentiometer = Potentiometer(pot_pin=26)
-    potentiometer.start()
-    stepper_motor = StepperMotor(potentiometer, dir_pin=14, step_pin=15, enable_pin=13)
-    rest_server = RESTServer(stepper_motor, potentiometer, display=oled_display)
+    pot = potentiometer(pot_pin=26)
+    pot.start()
+    stepper_motor = steppermotor(pot, oled_display, logging, dir_pin=14, step_pin=15, enable_pin=13)
+    # stepper_motor.home()
+    rest_server = RESTServer(stepper_motor, pot, wifi_manager, display=oled_display)
 
     # Connect to Wi-Fi
     await wifi_manager.connect()
